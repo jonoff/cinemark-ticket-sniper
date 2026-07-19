@@ -111,19 +111,19 @@ def fetch(url: str) -> str:
             except ValueError:
                 retry_after = 0
         except (urllib.error.URLError, TimeoutError):
-            pass  # transient network hiccup — retry on the same schedule
+            pass  # transient network hiccup: retry on the same schedule
     raise RuntimeError(f"gave up fetching {url} after {len(BACKOFF_SCHEDULE)} backoffs")
 
 
 def notify(title: str, message: str) -> None:
-    log(f"ALERT: {title} — {message}")
+    log(f"ALERT: {title}: {message}")
     with ALERT_LOG.open("a") as f:
         f.write(f"{datetime.now().isoformat()}  {title}: {message}\n")
     hook = HERE / "notify-hook"
     if hook.exists() and os.access(hook, os.X_OK):
         try:
             subprocess.run([str(hook), title, message], capture_output=True, timeout=30)
-        except Exception as e:  # noqa: BLE001 — alerting must never kill the sweep
+        except Exception as e:  # noqa: BLE001: alerting must never kill the sweep
             log(f"WARN: notify-hook failed: {e!r}")
 
 
@@ -204,7 +204,7 @@ def sweep(state: dict, scan_dates: bool, only_dates: list[str] | None) -> None:
                 continue  # already tracking; showtime ids are stable
             try:
                 theater_id, shows = showtimes_for(date)
-            except Exception as e:  # noqa: BLE001 — skip this date, keep sweeping
+            except Exception as e:  # noqa: BLE001: skip this date, keep sweeping
                 log(f"WARN: date probe {date} failed: {e!r}")
                 continue
             if theater_id:
@@ -228,7 +228,7 @@ def sweep(state: dict, scan_dates: bool, only_dates: list[str] | None) -> None:
     for i, (date, sid, iso) in enumerate(watch):
         try:
             seats = available_seats(state["theater_id"], sid, iso)
-        except Exception as e:  # noqa: BLE001 — skip this showtime, keep sweeping
+        except Exception as e:  # noqa: BLE001: skip this showtime, keep sweeping
             log(f"WARN: seat check {date} {fmt_time(iso)} failed: {e!r}")
             continue
         total += len(seats)
@@ -244,7 +244,7 @@ def sweep(state: dict, scan_dates: bool, only_dates: list[str] | None) -> None:
             save_state(state)
     log(f"seat scan: {len(watch)} showtimes checked, {total} qualifying seats")
     if first_run:
-        log("first run — baseline recorded, no alerts fired")
+        log("first run: baseline recorded, no alerts fired")
 
 
 def report(state: dict) -> None:
@@ -253,7 +253,7 @@ def report(state: dict) -> None:
           f"shows {EARLIEST}-{LATEST}, party of {PARTY_SIZE}\n")
     tracked = {d: v for d, v in sorted(state["dates"].items()) if v["showtimes"]}
     if not tracked:
-        print("no dates tracked yet — run a sweep first")
+        print("no dates tracked yet: run a sweep first")
         return
     print(f"on sale: {min(tracked)} to {max(tracked)} ({len(tracked)} dates)\n")
     empty = True
@@ -265,7 +265,7 @@ def report(state: dict) -> None:
                 print(f"  {d} {fmt_time(iso):>8}  {len(seats):>3} seats: "
                       f"{', '.join(seats[:14])}{'...' if len(seats) > 14 else ''}")
     if empty:
-        print("no qualifying seats right now — the watcher alerts when one opens")
+        print("no qualifying seats right now: the watcher alerts when one opens")
 
 
 def main() -> None:
@@ -285,7 +285,7 @@ def main() -> None:
         cycle = state.get("cycle", 0)  # persisted so --once runs (CI) keep cadence
         try:
             sweep(state, scan_dates=(cycle % DATE_SCAN_EVERY == 0), only_dates=args.dates)
-        except Exception as e:  # noqa: BLE001 — keep the loop alive on transient errors
+        except Exception as e:  # noqa: BLE001: keep the loop alive on transient errors
             log(f"ERROR during sweep: {e!r}")
         state["cycle"] = cycle + 1
         save_state(state)
