@@ -3,6 +3,11 @@ on:
   schedule:
     - cron: "*/30 * * * *"
   workflow_dispatch:
+    inputs:
+      test_alert:
+        description: "Fire a test alert instead of sweeping (verifies the email channel)"
+        type: boolean
+        default: false
 
 concurrency:
   group: watcher
@@ -21,7 +26,12 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Test alert
+        if: inputs.test_alert
+        run: ./notify-hook "Test alert" "The email channel works. A real alert looks like: Seats open 2026-08-08 7:00pm, F11-F12. You can close this issue."
+
       - name: Run sweep
+        if: ${{ !inputs.test_alert }}
         run: python3 watch.py --once
 
       - name: Persist state
