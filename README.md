@@ -1,3 +1,6 @@
+> **Note:** This fork uses [ntfy.sh](https://ntfy.sh) push notifications
+> instead of the original GitHub Issues email alerts.
+
 # Cinemark ticket sniper
 
 Push notifications when seats open up at a sold-out Cinemark showing.
@@ -21,7 +24,10 @@ happens to be looking. This looks every 30 minutes so you don't have to.
 3. Copy `config.toml.example` to `config.toml` and fill in your theater,
    movie, seat preferences, and ntfy topic.
 4. Delete `state.json` and `alerts.log`, they belong to this repo's hunt.
-5. Enable workflows on your fork (Actions tab, one button).
+5. Enable workflows on your fork. On your fork's GitHub page, click the
+   **Actions** tab, then click the green **I understand my workflows, go ahead
+   and enable them** button (or **Enable all workflows**). This is required
+   because GitHub disables Actions by default on forked repos.
 6. Run the `watch` workflow once by hand (Actions, then watch, then Run
    workflow). The first sweep records a quiet baseline and alerts start with
    the second.
