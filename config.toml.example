@@ -1,0 +1,18 @@
+# Copy this file to config.toml and fill in your target theater and movie.
+
+[target]
+theater = "tx-dallas/cinemark-dallas-xd-and-imax"
+movie_id = 104867
+movie_name = "The Odyssey IMAX 70MM"
+timezone = "America/Chicago"
+
+[filters]
+excluded_rows = ["A", "B", "C", "D"]
+earliest_showtime = "09:00"
+latest_showtime = "23:59"
+party_size = 1
+
+[pacing]
+request_gap_seconds = 8
+date_scan_every = 3
+poll_minutes = 5
