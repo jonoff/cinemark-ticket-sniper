@@ -111,7 +111,7 @@ def fetch(url: str) -> str:
     for attempt, backoff in enumerate([0, *BACKOFF_SCHEDULE]):
         if backoff:
             wait = max(backoff, retry_after)
-            _log.warning("backing off %ss (Retry-After: %s, schedule: %s)",
+            _log.info("backing off %ss (Retry-After: %s, schedule: %s)",
                          wait, retry_after or "none", backoff)
             time.sleep(wait)
         try:
@@ -269,11 +269,14 @@ def sweep(state: dict, scan_dates: bool, only_dates: list[str] | None) -> None:
     ]
     scanned_map = state.setdefault("scanned", {})
     now = datetime.now(TZ)
+    # Weight = proximity × time_boost × weekend × recency  (range 0.075–9.0)
+    # Higher → more likely to be sampled. Picking uses random()^(1/w) key sort.
     weight_map: dict[str, float] = {}
     weights = []
     for date, sid, iso in watch:
         showtime = datetime.fromisoformat(iso).replace(tzinfo=TZ)
         days_until = (showtime - now).days
+        # halves every 2 days with a 0.15 floor; today/tomorrow at 1.0
         proximity = 0.15 + 0.85 * (2.0 ** (-max(0, days_until - 1) / 2))
         hour = showtime.hour
         time_boost = 1.0 + 1.0 * (1 - abs(hour - 19) / 12)  # 2x at 7pm, 1x at edges
@@ -295,9 +298,8 @@ def sweep(state: dict, scan_dates: bool, only_dates: list[str] | None) -> None:
         picked = [item for item, w, k in ranked[:SAMPLES_PER_SWEEP]]
         sample_dates = len({d for d, _, _ in picked})
         total_dates = len({d for d, _, _ in watch})
-        _log.info("seat scan: sampling %s/%s showtimes, %s/%s dates (est: ~%.0fs)",
-                  SAMPLES_PER_SWEEP, len(watch), sample_dates, total_dates,
-                  SAMPLES_PER_SWEEP * REQUEST_GAP)
+        _log.info("seat scan: sampling %s/%s showtimes, %s/%s dates",
+                  SAMPLES_PER_SWEEP, len(watch), sample_dates, total_dates)
     else:
         picked = watch
         total_dates = len({d for d, _, _ in watch})
@@ -314,7 +316,10 @@ def sweep(state: dict, scan_dates: bool, only_dates: list[str] | None) -> None:
             continue
         scanned_map[sid] = cycle
         total += len(seats)
-        _log.debug("found %s seats at %s %s (weight: %.2f)", len(seats), date, fmt_time(iso), weight_map[sid])
+        last_scanned = scanned_map.get(sid)
+        cycles_since = "never" if last_scanned is None else cycle - last_scanned
+        _log.debug("found %s seats at %s %s (show: %s, weight: %.2f, last_scan: %s)",
+                   len(seats), date, fmt_time(iso), sid, weight_map[sid], cycles_since)
         prev = set(state["seats"].get(sid, []))
         fresh = {s.label for s in seats} - prev
         state["seats"][sid] = sorted(s.label for s in seats)
