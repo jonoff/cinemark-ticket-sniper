@@ -28,6 +28,9 @@ excluded_rows = ["A", "B", "C", "D"]
 # Seat columns to ignore (e.g. extreme edges).
 excluded_columns = [1, 27]
 
+# Dates to skip entirely (useful when you're busy those days).
+ignored_dates = ["2026-08-15", "2026-08-16"]
+
 # Ignore showings that start outside this window (theater-local, 24h HH:MM).
 earliest_showtime = "09:00"
 latest_showtime = "23:59"

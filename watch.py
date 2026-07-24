@@ -59,6 +59,7 @@ MOVIE_NAME = TARGET.get("movie_name", f"movie {MOVIE_ID}")
 TZ = ZoneInfo(TARGET.get("timezone", "UTC"))
 EXCLUDED_ROWS = set(FILTERS.get("excluded_rows", []))
 EXCLUDED_COLS = set(FILTERS.get("excluded_columns", []))
+IGNORED_DATES = set(FILTERS.get("ignored_dates", []))
 EARLIEST = FILTERS.get("earliest_showtime", "00:00")
 LATEST = FILTERS.get("latest_showtime", "23:59")
 PARTY_SIZE = int(FILTERS.get("party_size", 1))
@@ -108,7 +109,8 @@ def fetch(url: str) -> str:
     for attempt, backoff in enumerate([0, *BACKOFF_SCHEDULE]):
         if backoff:
             wait = max(backoff, retry_after)
-            _log.warning("backing off %ss (attempt %s)", wait, attempt)
+            _log.warning("backing off %ss (Retry-After: %s, schedule: %s)",
+                         wait, retry_after or "none", backoff)
             time.sleep(wait)
         try:
             with urllib.request.urlopen(req, timeout=30) as resp:
@@ -121,7 +123,9 @@ def fetch(url: str) -> str:
             if e.code not in (429, 403, 500, 502, 503):
                 raise
             try:
-                retry_after = min(int(e.headers.get("Retry-After", "0")), 1800)
+                raw = e.headers.get("Retry-After", "0")
+                retry_after = min(int(raw), 1800)
+                _log.debug("server Retry-After: %s (capped to %s)", raw, retry_after)
             except ValueError:
                 retry_after = 0
         except (urllib.error.URLError, TimeoutError):
@@ -218,12 +222,14 @@ def sweep(state: dict, scan_dates: bool, only_dates: list[str] | None) -> None:
     _log.info("sweep #%s starting — %s @ %s",
               cycle, MOVIE_NAME, THEATER.split("/")[-1])
     _log.debug("theater URL: %s/theatres/%s", BASE, THEATER)
+    if IGNORED_DATES:
+        _log.debug("ignoring dates: %s", ", ".join(sorted(IGNORED_DATES)))
     prune_past(state)
 
     if scan_dates or first_run or only_dates or "theater_id" not in state:
         strip = only_dates or DATE_VALUE.findall(fetch(f"{BASE}/theatres/{THEATER}"))
         for date in sorted(set(strip)):
-            if state["dates"].get(date, {}).get("showtimes"):
+            if date in IGNORED_DATES or state["dates"].get(date, {}).get("showtimes"):
                 continue
             try:
                 theater_id, shows = showtimes_for(date)
@@ -248,7 +254,7 @@ def sweep(state: dict, scan_dates: bool, only_dates: list[str] | None) -> None:
         (date, sid, iso)
         for date, info in sorted(state["dates"].items())
         for sid, iso in sorted(info["showtimes"].items(), key=lambda kv: kv[1])
-        if qualifying(iso) and (not only_dates or date in only_dates)
+        if date not in IGNORED_DATES and qualifying(iso) and (not only_dates or date in only_dates)
     ]
     total = 0
     for i, (date, sid, iso) in enumerate(watch):
@@ -261,8 +267,9 @@ def sweep(state: dict, scan_dates: bool, only_dates: list[str] | None) -> None:
         prev = set(state["seats"].get(sid, []))
         fresh = {s.label for s in seats} - prev
         state["seats"][sid] = sorted(s.label for s in seats)
-        _log.debug("seat diff %s %s: %s fresh, %s total",
-                   date, fmt_time(iso), len(fresh), len(seats))
+        if fresh:
+            _log.debug("seat diff %s %s: %s fresh, %s total",
+                       date, fmt_time(iso), len(fresh), len(seats))
         openings = [b for b in seat_blocks(seats)
                     if len(b) >= PARTY_SIZE and any(s.label in fresh for s in b)]
         if openings and not first_run:

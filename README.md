@@ -46,6 +46,7 @@ Everything lives in `config.toml`:
 | `topic` | ntfy.sh topic name for push notifications |
 | `excluded_rows` | rows you refuse, e.g. `["A", "B", "C", "D"]` |
 | `excluded_columns` | seat columns to ignore, e.g. `[1, 27]` for edge seats |
+| `ignored_dates` | dates to skip entirely, e.g. `["2026-08-15"]` |
 | `earliest_showtime` / `latest_showtime` | accept window, 24h `HH:MM`, theater-local |
 | `party_size` | alert only when this many adjacent seats open together |
 
