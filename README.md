@@ -28,9 +28,10 @@ happens to be looking. This looks every 30 minutes so you don't have to.
    **Actions** tab, then click the green **I understand my workflows, go ahead
    and enable them** button (or **Enable all workflows**). This is required
    because GitHub disables Actions by default on forked repos.
-6. Run the `watch` workflow once by hand (Actions, then watch, then Run
-   workflow). The first sweep records a quiet baseline and alerts start with
-   the second.
+6. If the `watch` workflow still shows as **Disabled** in the left sidebar,
+   click on it and click the **Enable workflow** button.
+7. Run the `watch` workflow once by hand (**Actions → watch → Run workflow**).
+   The first sweep records a quiet baseline and alerts start with the second.
 
 ## Config
 

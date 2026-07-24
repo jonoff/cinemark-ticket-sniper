@@ -42,7 +42,7 @@ jobs:
         run: |
           git config user.name "odyssey-watcher[bot]"
           git config user.email "actions@users.noreply.github.com"
-          git add state.json alerts.log 2>/dev/null || true
+          git add state.json 2>/dev/null || true
           if ! git diff --cached --quiet; then
             git commit -m "state: sweep $(date -u '+%Y-%m-%d %H:%M UTC')"
             git pull --rebase --autostash origin main || true
