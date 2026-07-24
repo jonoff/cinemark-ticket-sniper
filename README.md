@@ -49,6 +49,7 @@ Everything lives in `config.toml`:
 | `ignored_dates` | dates to skip entirely, e.g. `["2026-08-15"]` |
 | `earliest_showtime` / `latest_showtime` | accept window, 24h `HH:MM`, theater-local |
 | `party_size` | alert only when this many adjacent seats open together |
+| `samples_per_sweep` | showtimes sampled per sweep (weighted by cancellation likelihood); `0` = all |
 
 To find `movie_id`: open your theater's page on cinemark.com, right-click any
 showtime of your movie, and copy the link. It looks like

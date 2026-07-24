@@ -41,14 +41,20 @@ ALERT_LOG = HERE / "alerts.log"
 LOG_FILE = HERE / "watch.log"
 
 _log = logging.getLogger("cinemark")
-_log.setLevel(logging.INFO)
-_fmt = logging.Formatter("[%(asctime)s] %(message)s", datefmt="%Y-%m-%d %H:%M:%S")
-_sh = logging.StreamHandler()
-_sh.setFormatter(_fmt)
-_log.addHandler(_sh)
-_fh = logging.FileHandler(LOG_FILE, mode="a", delay=True)
-_fh.setFormatter(_fmt)
-_log.addHandler(_fh)
+
+
+def _setup_logging() -> None:
+    _log.setLevel(logging.INFO)
+    _fmt = logging.Formatter("[%(asctime)s] [%(levelname)-7s] %(message)s", datefmt="%Y-%m-%d %H:%M:%S")
+    _sh = logging.StreamHandler()
+    _sh.setFormatter(_fmt)
+    _log.addHandler(_sh)
+    _fh = logging.FileHandler(LOG_FILE, mode="a", delay=True)
+    _fh.setFormatter(_fmt)
+    _log.addHandler(_fh)
+
+
+_setup_logging()
 
 _cfg = tomllib.loads((HERE / "config.toml").read_text())
 TARGET, FILTERS, PACING = _cfg["target"], _cfg["filters"], _cfg.get("pacing", {})
@@ -66,6 +72,7 @@ PARTY_SIZE = int(FILTERS.get("party_size", 1))
 REQUEST_GAP = float(PACING.get("request_gap_seconds", 8))
 DATE_SCAN_EVERY = int(PACING.get("date_scan_every", 3))
 POLL_MINUTES = float(PACING.get("poll_minutes", 5))
+SAMPLES_PER_SWEEP = int(PACING.get("samples_per_sweep", 15))
 
 BASE = "https://www.cinemark.com"
 UA = ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
@@ -94,12 +101,7 @@ class Seat:
         return f"{self.row}{self.number}"
 
 
-def _short(url: str) -> str:
-    return url.removeprefix(BASE) or "/"
-
-
 def fetch(url: str) -> str:
-    _log.debug("GET %s", _short(url))
     req = urllib.request.Request(url, headers={
         "User-Agent": UA,
         "Accept": "text/html,application/xhtml+xml",
@@ -154,7 +156,7 @@ def load_state() -> dict:
 
 
 def save_state(state: dict) -> None:
-    _log.debug("save state")
+    _log.debug("saving state...")
     STATE_FILE.write_text(json.dumps(state, indent=1, sort_keys=True))
 
 
@@ -179,7 +181,6 @@ def available_seats(theater_id: str, showtime_id: str, iso: str) -> list[Seat]:
     seats = [Seat(row, int(num), int(col))
              for row, num, col in AVAILABLE_SEAT.findall(html)
              if row not in EXCLUDED_ROWS and int(col) not in EXCLUDED_COLS]
-    _log.debug("seat map %s: %s available", showtime_id, len(seats))
     return seats
 
 
@@ -228,6 +229,8 @@ def sweep(state: dict, scan_dates: bool, only_dates: list[str] | None) -> None:
 
     if scan_dates or first_run or only_dates or "theater_id" not in state:
         strip = only_dates or DATE_VALUE.findall(fetch(f"{BASE}/theatres/{THEATER}"))
+        showed_streak = any(d["showtimes"] for d in state["dates"].values())
+        gap = 0
         for date in sorted(set(strip)):
             if date in IGNORED_DATES or state["dates"].get(date, {}).get("showtimes"):
                 continue
@@ -239,10 +242,18 @@ def sweep(state: dict, scan_dates: bool, only_dates: list[str] | None) -> None:
             if theater_id:
                 state["theater_id"] = theater_id
             state["dates"][date] = {"showtimes": shows}
-            if shows and not first_run:
-                notify(f"New date on sale: {date}",
-                       f"{MOVIE_NAME} added for {date}: "
-                       + ", ".join(sorted(fmt_time(i) for i in shows.values())))
+            if shows:
+                showed_streak = True
+                gap = 0
+                if not first_run:
+                    notify(f"New date on sale: {date}",
+                           f"{MOVIE_NAME} added for {date}: "
+                           + ", ".join(sorted(fmt_time(i) for i in shows.values())))
+            elif showed_streak:
+                gap += 1
+                if gap >= 2:
+                    _log.debug("no showtimes for %s consecutive dates — stopping probe", gap)
+                    break
         tracked_dates = {d for d, v in state["dates"].items() if v["showtimes"]}
         total_showtimes = sum(len(state["dates"][d]["showtimes"]) for d in tracked_dates)
         _log.info("date scan: %s dates (%s to %s), %s showtimes",
@@ -256,14 +267,54 @@ def sweep(state: dict, scan_dates: bool, only_dates: list[str] | None) -> None:
         for sid, iso in sorted(info["showtimes"].items(), key=lambda kv: kv[1])
         if date not in IGNORED_DATES and qualifying(iso) and (not only_dates or date in only_dates)
     ]
+    scanned_map = state.setdefault("scanned", {})
+    now = datetime.now(TZ)
+    weight_map: dict[str, float] = {}
+    weights = []
+    for date, sid, iso in watch:
+        showtime = datetime.fromisoformat(iso).replace(tzinfo=TZ)
+        days_until = (showtime - now).days
+        proximity = 0.15 + 0.85 * (2.0 ** (-max(0, days_until - 1) / 2))
+        hour = showtime.hour
+        time_boost = 1.0 + 1.0 * (1 - abs(hour - 19) / 12)  # 2x at 7pm, 1x at edges
+        weekend = 1.5 if showtime.weekday() >= 5 else 1.0
+        cycles_since = cycle - scanned_map.get(sid, -1)
+        if cycles_since == 0:
+            recency = 0.5                               # scanned this cycle
+        elif cycles_since < 0:
+            recency = 3.0                               # never scanned: max boost
+        else:
+            recency = min(1.0 + cycles_since * 0.25, 3.0)  # grows with neglect
+        w = proximity * time_boost * weekend * recency
+        weight_map[sid] = w
+        weights.append(w)
+
+    if SAMPLES_PER_SWEEP > 0 and len(watch) > SAMPLES_PER_SWEEP:
+        keys = [random.random() ** (1.0 / w) for w in weights]
+        ranked = sorted(zip(watch, weights, keys), key=lambda x: x[2], reverse=True)
+        picked = [item for item, w, k in ranked[:SAMPLES_PER_SWEEP]]
+        sample_dates = len({d for d, _, _ in picked})
+        total_dates = len({d for d, _, _ in watch})
+        _log.info("seat scan: sampling %s/%s showtimes, %s/%s dates (est: ~%.0fs)",
+                  SAMPLES_PER_SWEEP, len(watch), sample_dates, total_dates,
+                  SAMPLES_PER_SWEEP * REQUEST_GAP)
+    else:
+        picked = watch
+        total_dates = len({d for d, _, _ in watch})
+        _log.debug("seat scan: full sweep of %s showtimes, %s dates",
+                   len(watch), total_dates)
+
     total = 0
-    for i, (date, sid, iso) in enumerate(watch):
+    t0 = time.monotonic()
+    for i, (date, sid, iso) in enumerate(picked):
         try:
             seats = available_seats(state["theater_id"], sid, iso)
         except Exception as e:  # noqa: BLE001: skip this showtime, keep sweeping
             _log.warning("seat check %s %s failed: %s", date, fmt_time(iso), e)
             continue
+        scanned_map[sid] = cycle
         total += len(seats)
+        _log.debug("found %s seats at %s %s (weight: %.2f)", len(seats), date, fmt_time(iso), weight_map[sid])
         prev = set(state["seats"].get(sid, []))
         fresh = {s.label for s in seats} - prev
         state["seats"][sid] = sorted(s.label for s in seats)
@@ -277,9 +328,10 @@ def sweep(state: dict, scan_dates: bool, only_dates: list[str] | None) -> None:
                    f"{MOVIE_NAME}: " + ", ".join(fmt_block(b) for b in openings))
         if i % 10 == 9:
             save_state(state)
-    date_range = f"{watch[0][0]}..{watch[-1][0]}" if watch else "none"
-    _log.info("seat scan: %s showtimes over %s, %s qualifying seats",
-              len(watch), date_range, total)
+    elapsed = time.monotonic() - t0
+    _log.info("seat scan: %s/%s showtimes, %s/%s dates, %s seats in %.0fs",
+              len(picked), len(watch), len({d for d, _, _ in picked}),
+              total_dates, total, elapsed)
     if first_run:
         _log.info("first run: baseline recorded — no alerts fired")
 
