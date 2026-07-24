@@ -21,6 +21,7 @@ from __future__ import annotations
 import argparse
 import gzip
 import json
+import logging
 import os
 import random
 import re
@@ -37,6 +38,17 @@ from zoneinfo import ZoneInfo
 HERE = Path(__file__).parent
 STATE_FILE = HERE / "state.json"
 ALERT_LOG = HERE / "alerts.log"
+LOG_FILE = HERE / "watch.log"
+
+_log = logging.getLogger("cinemark")
+_log.setLevel(logging.INFO)
+_fmt = logging.Formatter("[%(asctime)s] %(message)s", datefmt="%Y-%m-%d %H:%M:%S")
+_sh = logging.StreamHandler()
+_sh.setFormatter(_fmt)
+_log.addHandler(_sh)
+_fh = logging.FileHandler(LOG_FILE, mode="a", delay=True)
+_fh.setFormatter(_fmt)
+_log.addHandler(_fh)
 
 _cfg = tomllib.loads((HERE / "config.toml").read_text())
 TARGET, FILTERS, PACING = _cfg["target"], _cfg["filters"], _cfg.get("pacing", {})
@@ -81,11 +93,12 @@ class Seat:
         return f"{self.row}{self.number}"
 
 
-def log(msg: str) -> None:
-    print(f"[{datetime.now():%Y-%m-%d %H:%M:%S}] {msg}", flush=True)
+def _short(url: str) -> str:
+    return url.removeprefix(BASE) or "/"
 
 
 def fetch(url: str) -> str:
+    _log.debug("GET %s", _short(url))
     req = urllib.request.Request(url, headers={
         "User-Agent": UA,
         "Accept": "text/html,application/xhtml+xml",
@@ -95,7 +108,7 @@ def fetch(url: str) -> str:
     for attempt, backoff in enumerate([0, *BACKOFF_SCHEDULE]):
         if backoff:
             wait = max(backoff, retry_after)
-            log(f"rate-limited/blocked, backing off {wait}s (attempt {attempt})")
+            _log.warning("backing off %ss (attempt %s)", wait, attempt)
             time.sleep(wait)
         try:
             with urllib.request.urlopen(req, timeout=30) as resp:
@@ -117,7 +130,7 @@ def fetch(url: str) -> str:
 
 
 def notify(title: str, message: str) -> None:
-    log(f"ALERT: {title}: {message}")
+    _log.info("ALERT: %s: %s", title, message)
     with ALERT_LOG.open("a") as f:
         f.write(f"{datetime.now().isoformat()}  {title}: {message}\n")
     hook = HERE / "notify-hook"
@@ -125,16 +138,19 @@ def notify(title: str, message: str) -> None:
         try:
             subprocess.run([str(hook), title, message], capture_output=True, timeout=30)
         except Exception as e:  # noqa: BLE001: alerting must never kill the sweep
-            log(f"WARN: notify-hook failed: {e!r}")
+            _log.warning("notify-hook failed: %s", e)
 
 
 def load_state() -> dict:
     if STATE_FILE.exists():
+        _log.debug("load state")
         return json.loads(STATE_FILE.read_text())
+    _log.debug("no state file, starting fresh")
     return {"dates": {}, "seats": {}}
 
 
 def save_state(state: dict) -> None:
+    _log.debug("save state")
     STATE_FILE.write_text(json.dumps(state, indent=1, sort_keys=True))
 
 
@@ -154,11 +170,13 @@ def available_seats(theater_id: str, showtime_id: str, iso: str) -> list[Seat]:
            f"&CinemarkMovieId={MOVIE_ID}&Showtime={iso}")
     html = fetch(url)
     if "seatBlock" not in html:
-        log(f"WARN: seat map {showtime_id} returned no seat markup (page changed?)")
+        _log.warning("seat map %s returned no seat markup (page changed?)", showtime_id)
         return []
-    return [Seat(row, int(num), int(col))
-            for row, num, col in AVAILABLE_SEAT.findall(html)
-            if row not in EXCLUDED_ROWS and int(col) not in EXCLUDED_COLS]
+    seats = [Seat(row, int(num), int(col))
+             for row, num, col in AVAILABLE_SEAT.findall(html)
+             if row not in EXCLUDED_ROWS and int(col) not in EXCLUDED_COLS]
+    _log.debug("seat map %s: %s available", showtime_id, len(seats))
+    return seats
 
 
 def seat_blocks(seats: list[Seat]) -> list[list[Seat]]:
@@ -196,17 +214,21 @@ def prune_past(state: dict) -> None:
 
 def sweep(state: dict, scan_dates: bool, only_dates: list[str] | None) -> None:
     first_run = not state["dates"]
+    cycle = state.get("cycle", 0)
+    _log.info("sweep #%s starting — %s @ %s",
+              cycle, MOVIE_NAME, THEATER.split("/")[-1])
+    _log.debug("theater URL: %s/theatres/%s", BASE, THEATER)
     prune_past(state)
 
     if scan_dates or first_run or only_dates or "theater_id" not in state:
         strip = only_dates or DATE_VALUE.findall(fetch(f"{BASE}/theatres/{THEATER}"))
         for date in sorted(set(strip)):
             if state["dates"].get(date, {}).get("showtimes"):
-                continue  # already tracking; showtime ids are stable
+                continue
             try:
                 theater_id, shows = showtimes_for(date)
-            except Exception as e:  # noqa: BLE001: skip this date, keep sweeping
-                log(f"WARN: date probe {date} failed: {e!r}")
+            except Exception as e:
+                _log.warning("date probe %s failed: %s", date, e)
                 continue
             if theater_id:
                 state["theater_id"] = theater_id
@@ -215,8 +237,11 @@ def sweep(state: dict, scan_dates: bool, only_dates: list[str] | None) -> None:
                 notify(f"New date on sale: {date}",
                        f"{MOVIE_NAME} added for {date}: "
                        + ", ".join(sorted(fmt_time(i) for i in shows.values())))
-        log(f"date scan: tracking "
-            f"{sum(1 for d in state['dates'].values() if d['showtimes'])} dates")
+        tracked_dates = {d for d, v in state["dates"].items() if v["showtimes"]}
+        total_showtimes = sum(len(state["dates"][d]["showtimes"]) for d in tracked_dates)
+        _log.info("date scan: %s dates (%s to %s), %s showtimes",
+                  len(tracked_dates), min(tracked_dates), max(tracked_dates),
+                  total_showtimes)
         save_state(state)
 
     watch = [
@@ -230,12 +255,14 @@ def sweep(state: dict, scan_dates: bool, only_dates: list[str] | None) -> None:
         try:
             seats = available_seats(state["theater_id"], sid, iso)
         except Exception as e:  # noqa: BLE001: skip this showtime, keep sweeping
-            log(f"WARN: seat check {date} {fmt_time(iso)} failed: {e!r}")
+            _log.warning("seat check %s %s failed: %s", date, fmt_time(iso), e)
             continue
         total += len(seats)
         prev = set(state["seats"].get(sid, []))
         fresh = {s.label for s in seats} - prev
         state["seats"][sid] = sorted(s.label for s in seats)
+        _log.debug("seat diff %s %s: %s fresh, %s total",
+                   date, fmt_time(iso), len(fresh), len(seats))
         openings = [b for b in seat_blocks(seats)
                     if len(b) >= PARTY_SIZE and any(s.label in fresh for s in b)]
         if openings and not first_run:
@@ -243,9 +270,11 @@ def sweep(state: dict, scan_dates: bool, only_dates: list[str] | None) -> None:
                    f"{MOVIE_NAME}: " + ", ".join(fmt_block(b) for b in openings))
         if i % 10 == 9:
             save_state(state)
-    log(f"seat scan: {len(watch)} showtimes checked, {total} qualifying seats")
+    date_range = f"{watch[0][0]}..{watch[-1][0]}" if watch else "none"
+    _log.info("seat scan: %s showtimes over %s, %s qualifying seats",
+              len(watch), date_range, total)
     if first_run:
-        log("first run: baseline recorded, no alerts fired")
+        _log.info("first run: baseline recorded — no alerts fired")
 
 
 def report(state: dict) -> None:
@@ -272,10 +301,13 @@ def report(state: dict) -> None:
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--once", action="store_true", help="single sweep, then exit")
+    ap.add_argument("-v", "--verbose", action="store_true", help="verbose output")
     ap.add_argument("--dates", nargs="*", help="restrict to specific YYYY-MM-DD dates")
     ap.add_argument("--report", action="store_true",
                     help="print availability from state.json and exit (no network)")
     args = ap.parse_args()
+    if args.verbose:
+        _log.setLevel(logging.DEBUG)
 
     if args.report:
         report(load_state())
@@ -283,15 +315,17 @@ def main() -> None:
 
     while True:
         state = load_state()
-        cycle = state.get("cycle", 0)  # persisted so --once runs (CI) keep cadence
+        cycle = state.get("cycle", 0)
         try:
             sweep(state, scan_dates=(cycle % DATE_SCAN_EVERY == 0), only_dates=args.dates)
-        except Exception as e:  # noqa: BLE001: keep the loop alive on transient errors
-            log(f"ERROR during sweep: {e!r}")
+        except Exception as e:
+            _log.error("sweep #%s ERROR: %s", cycle, e)
         state["cycle"] = cycle + 1
         save_state(state)
         if args.once:
+            _log.info("sweep #%s complete", cycle)
             return
+        _log.info("sweep #%s complete — next in %s min", cycle, int(POLL_MINUTES))
         time.sleep(POLL_MINUTES * 60)
 
 
