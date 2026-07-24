@@ -18,6 +18,11 @@ Usage:
 """
 from __future__ import annotations
 
+import sys
+
+if sys.version_info < (3, 11):
+    sys.exit("Python 3.11+ required (for tomllib and zoneinfo)")
+
 import argparse
 import gzip
 import json
@@ -62,7 +67,11 @@ TARGET, FILTERS, PACING = _cfg["target"], _cfg["filters"], _cfg.get("pacing", {}
 THEATER = TARGET["theater"]
 MOVIE_ID = str(TARGET["movie_id"])
 MOVIE_NAME = TARGET.get("movie_name", f"movie {MOVIE_ID}")
-TZ = ZoneInfo(TARGET.get("timezone", "UTC"))
+TZNAME = TARGET.get("timezone", "UTC")
+try:
+    TZ = ZoneInfo(TZNAME)
+except (TypeError, ValueError, KeyError):
+    sys.exit(f"No timezone data for '{TZNAME}'. Run: pip install tzdata")
 EXCLUDED_ROWS = set(FILTERS.get("excluded_rows", []))
 EXCLUDED_COLS = set(FILTERS.get("excluded_columns", []))
 IGNORED_DATES = set(FILTERS.get("ignored_dates", []))
@@ -241,11 +250,12 @@ def sweep(state: dict, scan_dates: bool, only_dates: list[str] | None) -> None:
                 continue
             if theater_id:
                 state["theater_id"] = theater_id
+            was_known = date in state["dates"]
             state["dates"][date] = {"showtimes": shows}
             if shows:
                 showed_streak = True
                 gap = 0
-                if not first_run:
+                if not first_run and not was_known:
                     notify(f"New date on sale: {date}",
                            f"{MOVIE_NAME} added for {date}: "
                            + ", ".join(sorted(fmt_time(i) for i in shows.values())))
@@ -314,10 +324,10 @@ def sweep(state: dict, scan_dates: bool, only_dates: list[str] | None) -> None:
         except Exception as e:  # noqa: BLE001: skip this showtime, keep sweeping
             _log.warning("seat check %s %s failed: %s", date, fmt_time(iso), e)
             continue
-        scanned_map[sid] = cycle
-        total += len(seats)
         last_scanned = scanned_map.get(sid)
         cycles_since = "never" if last_scanned is None else cycle - last_scanned
+        scanned_map[sid] = cycle
+        total += len(seats)
         _log.debug("found %s seats at %s %s (show: %s, weight: %.2f, last_scan: %s)",
                    len(seats), date, fmt_time(iso), sid, weight_map[sid], cycles_since)
         prev = set(state["seats"].get(sid, []))

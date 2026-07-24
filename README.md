@@ -1,37 +1,48 @@
-> **Note:** This fork uses [ntfy.sh](https://ntfy.sh) push notifications
-> instead of the original GitHub Issues email alerts.
-
 # Cinemark ticket sniper
 
-Push notifications when seats open up at a sold-out Cinemark showing.
+Push notifications via [ntfy.sh](https://ntfy.sh) when seats open up at a
+sold-out Cinemark showing. (This fork replaces the original GitHub Issues
+email alerts with ntfy.sh push notifications.)
 
 Point it at any Cinemark theater and movie, say which rows, columns, and
 showtimes you would accept, and it sends you a push alert when a matching seat
-frees up or when new dates go on sale. Runs entirely on GitHub Actions: no
-server, no email provider, no API keys, nothing to pay for.
+frees up or when new dates go on sale. Runs on GitHub Actions or locally.
 
 Built to catch cancellations for The Odyssey in IMAX 70mm, which sold out
 weeks ahead at every theater that can project it. Good seats reappear all the
 time. Someone returns two tickets, a hold expires, and the seats go to whoever
-happens to be looking. This looks every 30 minutes so you don't have to.
+happens to be looking.
 
 ## Setup
 
+Create a topic at [ntfy.sh](https://ntfy.sh), install the app on your phone.
+Copy `config.toml.example` to `config.toml` and fill in your theater, movie,
+seat preferences, and ntfy topic.
+
+Then choose how to run:
+
+### GitHub Actions (fork)
+
 1. Fork this repo. Keep the fork public: public repos get unlimited free
    Actions minutes.
-2. Create a topic at [ntfy.sh](https://ntfy.sh) and install the app on your
-   phone.
-3. Copy `config.toml.example` to `config.toml` and fill in your theater,
-   movie, seat preferences, and ntfy topic.
-4. Delete `state.json` and `alerts.log`, they belong to this repo's hunt.
-5. Enable workflows on your fork. On your fork's GitHub page, click the
+2. Enable workflows on your fork. On your fork's GitHub page, click the
    **Actions** tab, then click the green **I understand my workflows, go ahead
    and enable them** button (or **Enable all workflows**). This is required
    because GitHub disables Actions by default on forked repos.
-6. If the `watch` workflow still shows as **Disabled** in the left sidebar,
+3. If the `watch` workflow still shows as **Disabled** in the left sidebar,
    click on it and click the **Enable workflow** button.
-7. Run the `watch` workflow once by hand (**Actions → watch → Run workflow**).
+4. Run the `watch` workflow once by hand (**Actions → watch → Run workflow**).
    The first sweep records a quiet baseline and alerts start with the second.
+
+### Local
+
+```bash
+git clone <url>
+cd cinemark-ticket-sniper
+python3 -m venv venv && source venv/bin/activate
+pip install -r requirements.txt
+python3 watch.py
+```
 
 ## Config
 
@@ -59,10 +70,10 @@ is it.
 ## How it works
 
 Cinemark's site is server-rendered, so dates, showtimes, and seat maps are all
-plain HTML. On each run, an Actions job fetches the seat map of every showing
-that passes your filters, diffs availability against the previous run (state
-is a JSON snapshot the job commits back to the repo), and on any newly opened
-seat or newly listed date it posts to your ntfy.sh topic, which pushes the
-alert to your phone. The job paces itself to about six requests a minute
-because Cinemark rate-limits around 60-70 requests per ten minutes, so a full
-sweep takes about 20 unhurried minutes.
+plain HTML. On each run it fetches the seat map of every showing that passes
+your filters, diffs availability against the previous run (state is a local
+JSON snapshot saved to `state.json`), and on any newly opened seat or newly
+listed date it posts to your ntfy.sh topic, which pushes the alert to your
+phone. The scanner paces itself to about six requests a minute because Cinemark
+rate-limits around 60-70 requests per ten minutes, occasionaly forcing a 30 min timeout.
+The logic picks a weighted sampling of dates/times by default to prefer more frequent checks of closer show times. This can be disabled to force a complete sweep every run for all matching showtimes.
